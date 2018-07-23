@@ -1,0 +1,45 @@
+// Exercise 2:
+
+ 
+
+var prev = 0
+
+var cur = 1
+
+for (i <- 0 to 9) {
+
+     println(prev)
+
+     var tmp = prev
+
+     prev = cur
+
+     cur = cur + tmp
+
+}
+
+ 
+
+// Exercise 3:
+
+ 
+
+def transformString(s: String, f: String => String): String {
+
+     f(s)
+
+}
+
+ 
+
+transformString("hello", s => s.toUpperCase())
+
+ 
+
+// Exercise 4:
+
+ 
+
+val my_nums = List.range(1, 20)
+
+my_nums.filter( (x: Int) => x % 3 == 0 )

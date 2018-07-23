@@ -1,0 +1,1 @@
+This is a repo that participants of the group learning forum (udemy-apache-spark-with-scala-hands-on-with-big-data 2018) can use to post suggested answers to the course's activities/exercises.
