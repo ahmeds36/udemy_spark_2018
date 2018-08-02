@@ -39,18 +39,19 @@ object PurchaseByCustomer
     // Sum up the total spend for customerID
     val totalsByCustomer = rdd.reduceByKey( (x,y) => (x + y))
     
-    // Collect the results from the RDD
-    val results = totalsByCustomer.collect()
-
     // Flip (customerID, spend) tuples to (spend,customerID) and then sort by key (the spend)
     val totalsSorted = totalsByCustomer.map( x => (x._2, x._1) ).sortByKey()
+    
+    // Collect the results from the RDD
+    val results = totalsSorted.collect()
     
     // Print the results, flipping the (spend,customerID) results to customerID: spend as we go.
     for (result <- totalsSorted) 
     {
       val spend = result._1
       val customerID = result._2
-      println(s"$customerID: $spend")
+      val formattedSpend = f"$spend%.2f GBP"
+      println(s"$customerID: $formattedSpend")
     } 
   } 
 }
