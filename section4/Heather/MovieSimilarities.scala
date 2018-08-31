@@ -10,8 +10,8 @@ import scala.math.sqrt
 
 object MovieSimilarities {
   
-  /** Load up a Map of movie IDs to movie names. */
-  def loadMovieNames() : Map[Int, String] = {
+  /** Load up a Map of movie IDs to movie names and genres. */
+  def loadMovieNamesGenres() : Map[Int, (String, Array[Int])] = {
     
     // Handle character encoding issues:
     implicit val codec = Codec("UTF-8")
@@ -19,17 +19,19 @@ object MovieSimilarities {
     codec.onUnmappableCharacter(CodingErrorAction.REPLACE)
 
     // Create a Map of Ints to Strings, and populate it from u.item.
-    var movieNames:Map[Int, String] = Map()
+    var movieNamesGenres:Map[Int, (String, Array[Int])] = Map()
     
-     val lines = Source.fromFile("../ml-100k/u.item").getLines()
-     for (line <- lines) {
-       var fields = line.split('|')
-       if (fields.length > 1) {
-        movieNames += (fields(0).toInt -> fields(1))
-       }
-     }
-    
-     return movieNames
+    val lines = Source.fromFile("../ml-100k/u.item").getLines()
+    for (line <- lines) {
+      var fields = line.split('|')
+      if (fields.length > 5) {
+        val movieID : Int = fields(0).toInt
+        val movieName : String = fields(1)
+        val genres: Array[Int] = fields.drop(5).map(a => a.toInt)
+        movieNamesGenres += (movieID -> (movieName, genres))
+      }
+    }   
+    return movieNamesGenres
   }
   
   type MovieRating = (Int, Double)
@@ -114,6 +116,27 @@ object MovieSimilarities {
     return (score, numPairs)
   }
   
+  /** Weight the similarity scores by the number of shared genres */
+  def weightByGenre( movieSimilarlity:((Int, Int), (Double, Int), (Array[Int], Array[Int])) ) : ((Int, Int), (Double, Int)) = {
+    val moviePair : (Int, Int) = movieSimilarlity._1
+    val score : Double = movieSimilarlity._2._1
+    val numPairs : Int = movieSimilarlity._2._2
+    val genres1 : Array[Int] = movieSimilarlity._3._1
+    val genres2 : Array[Int] = movieSimilarlity._3._2
+    
+    // generate a number between 0 and 19 for the number of shared genres
+    var sharedGenres : Double = 0.0
+    for (pair <- genres1.zip(genres2)) {
+      sharedGenres += pair._1 * pair._2
+    }
+    
+    // scale the similarity according to the number of shared genres
+    val scaleFactor : Double = 1 + sharedGenres/(1 + sharedGenres)
+    val newScore : Double = score * scaleFactor
+    
+    return (moviePair, (newScore, numPairs))
+  }
+  
   /** Our main function where the action happens */
   def main(args: Array[String]) {
     
@@ -124,7 +147,7 @@ object MovieSimilarities {
     val sc = new SparkContext("local[*]", "MovieSimilarities")
     
     println("\nLoading movie names...")
-    val nameDict = loadMovieNames()
+    val nameDict = loadMovieNamesGenres()
     
     val data = sc.textFile("../ml-100k/u.data")
 
@@ -149,7 +172,13 @@ object MovieSimilarities {
 
     // We now have (movie1, movie2) = > (rating1, rating2), (rating1, rating2) ...
     // Can now compute similarities.
-    val moviePairSimilarities = moviePairRatings.mapValues(computePearsonCorrelation).cache()
+    val moviePairSimilarities = moviePairRatings.mapValues(computeCosineSimilarity)
+    
+    // Bring in the genres as Array[Int]s
+    val moviePairsGenres = moviePairSimilarities.map(x => (x._1, x._2, (nameDict(x._1._1)._2, nameDict(x._1._2)._2)))
+    
+    // Calculate the number of shared genres and weight the score accordingly
+    val moviePairWeightedSimilarities = moviePairsGenres.map(weightByGenre).cache()
     
     //Save the results if desired
     //val sorted = moviePairSimilarities.sortByKey()
@@ -168,7 +197,7 @@ object MovieSimilarities {
       // Filter for movies with this sim that are "good" as defined by
       // our quality thresholds above     
       
-      val filteredResults = moviePairSimilarities.filter( x =>
+      val filteredResults = moviePairWeightedSimilarities.filter( x =>
         {
           val pair = x._1
           val sim = x._2
@@ -180,7 +209,7 @@ object MovieSimilarities {
       // Sort by quality score.
       val results = filteredResults.map( x => (x._2, x._1)).sortByKey(false).take(10)
       
-      println("\nTop 10 similar movies for " + nameDict(movieID))
+      println("\nTop 10 similar movies for " + nameDict(movieID)._1)
       for (result <- results) {
         val sim = result._1
         val pair = result._2
@@ -189,7 +218,7 @@ object MovieSimilarities {
         if (similarMovieID == movieID) {
           similarMovieID = pair._2
         }
-        println(nameDict(similarMovieID) + "\tscore: " + sim._1 + "\tstrength: " + sim._2)
+        println(nameDict(similarMovieID)._1 + "\tscore: " + sim._1 + "\tstrength: " + sim._2)
       }
     }
   }
