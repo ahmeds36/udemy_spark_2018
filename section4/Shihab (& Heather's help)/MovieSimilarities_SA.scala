@@ -9,6 +9,16 @@ import scala.io.Codec
 import scala.math.sqrt
 
 object MovieSimilarities_SA {
+
+/*
+ * EXECUTE WITH THE LINE BELOW (NOTE THERE ARE 5 PARAMETERS ENTERES AT THE END OF THE COMMAND):
+ * spark-submit --class com.sundogsoftware.spark.MovieSimilarities_SA MovieSims_SA.jar 50 5 0.01 50
+ * 50 -> movie id of the movie we're interested in (50 refers to Star Wars, of course)
+ * 5 -> excludes all movies below this rating
+ * 0.01 -> excludes all matching pair scores below this threshold
+ * 50 -> excludes any recommendations below this co-occurence threshold  
+ */
+  
   
   /** Load up a Map of movie IDs to movie names. */
   def loadMovieNames() : Map[Int, String] = {
@@ -31,6 +41,56 @@ object MovieSimilarities_SA {
     
      return movieNames
   }
+  
+  
+//SA EDIT #5A START **** Include movie genre ********************  
+// Create a Map of Ints to Strings and and array of Ints, and populate it from u.item.
+
+  /** Load up a Map of movie IDs to movie names and genres. */
+  def loadMovieNamesGenres() : Map[Int, (String, Array[Int])] = {
+    
+    // Handle character encoding issues:
+    implicit val codec = Codec("UTF-8")
+    codec.onMalformedInput(CodingErrorAction.REPLACE)
+    codec.onUnmappableCharacter(CodingErrorAction.REPLACE)
+
+    // Create a Map of Ints to Strings, and populate it from u.item.
+    var movieNamesGenres:Map[Int, (String, Array[Int])] = Map()
+    
+    val lines = Source.fromFile("../ml-100k/u.item").getLines()
+    for (line <- lines) {
+      var fields = line.split('|')
+      if (fields.length > 5) {
+        val movieID : Int = fields(0).toInt
+        val movieName : String = fields(1)
+        val genres: Array[Int] = fields.drop(5).map(a => a.toInt)
+        movieNamesGenres += (movieID -> (movieName, genres))
+      }
+    }   
+    return movieNamesGenres
+  }
+
+// Weight the similarity scores by the number of shared genres
+  def weightByGenre( movieSimilarlity:((Int, Int), (Double, Int), (Array[Int], Array[Int])) ) : ((Int, Int), (Double, Int)) = {
+    val moviePair : (Int, Int) = movieSimilarlity._1
+    val score : Double = movieSimilarlity._2._1
+    val numPairs : Int = movieSimilarlity._2._2
+    val genres1 : Array[Int] = movieSimilarlity._3._1
+    val genres2 : Array[Int] = movieSimilarlity._3._2
+    
+    // generate a number between 0 and 19 for the number of shared genres
+    var sharedGenres : Double = 0.0
+    for (pair <- genres1.zip(genres2)) {
+      sharedGenres += pair._1 * pair._2
+    }
+    
+    // scale the similarity according to the number of shared genres
+    val scaleFactor : Double = 1 + sharedGenres/(1 + sharedGenres)
+    val newScore : Double = score * scaleFactor
+    
+    return (moviePair, (newScore, numPairs))
+  }
+//SA EDIT #2A END***************************************************************************************
   
   type MovieRating = (Int, Double)
   type UserRatingPair = (Int, (MovieRating, MovieRating))
@@ -98,27 +158,25 @@ object MovieSimilarities_SA {
     var sum_x:Double = 0.0
     var sum_y:Double = 0.0
 
-    for (pair <- ratingPairs) {
-      val ratingX = pair._1
-      val ratingY = pair._2
-      
-      sum_x += ratingX
-      sum_y += ratingY
+    for (x <- ratingPairs) 
+    {
+      sum_x += x._1
+      sum_y += x._2
       numPairs += 1
-    }    
-    
+    }     
+
+    var x_mean = sum_x/numPairs
+    var y_mean = sum_x/numPairs
     
     var numerator:Double = 0.0
     var xdiffsq:Double = 0.0
     var ydiffsq:Double = 0.0
     
-    for (pair <- ratingPairs) {
-      val ratingX = pair._1
-      val ratingY = pair._2
-      
-      numerator += (ratingX - (sum_x/numPairs)) * (ratingY * (sum_y/numPairs))
-      xdiffsq += (ratingX - (sum_x/numPairs))*(ratingX - (sum_x/numPairs))
-      ydiffsq += (ratingY - (sum_y/numPairs))*(ratingY - (sum_y/numPairs))
+    for (y <- ratingPairs) 
+    {
+      numerator += (y._1 - x_mean ) * (y._2 - y_mean)
+      xdiffsq += (y._1 - x_mean)*(y._1 - x_mean)
+      ydiffsq += (y._2 - y_mean)*(y._2 - y_mean)
 
     }
     
@@ -166,8 +224,10 @@ object MovieSimilarities_SA {
   }
 
 //SA EDIT #2B END***************************************************************************************  
+
   
-  /** Our main function where the action happens */
+ 
+ /** Our main function where the action happens */
   def main(args: Array[String]) {
     
     // Set the log level to only print errors
@@ -177,29 +237,23 @@ object MovieSimilarities_SA {
     val sc = new SparkContext("local[*]", "MovieSimilarities")
     
     println("\nLoading movie names...")
-    val nameDict = loadMovieNames()
+    val nameDict = loadMovieNamesGenres()
     
     val data = sc.textFile("../ml-100k/u.data")
 
 //SA EDIT #1 START *********** adding rating score filter early on ***********************************
     
 // Map ratings to key / value pairs: user ID => movie ID, rating
-//val ratings = data.map(l => l.split("\t")).map(l => (l(0).toInt, (l(1).toInt, l(2).toDouble)))   
-    
-//Map to a three column RDD so that we can filter on the final column that relates to rating
-    val ratings = data.map(l => l.split("\t")).map(l => (l(0).toInt, l(1).toInt, l(2).toDouble)) 
-    
-// filter the RDD to only include movies rated above a specified threshold
-    val ratingsFiltered = ratings.filter(l => l._3 > 4.0)
-    
-// return to format of key / value pairs: user ID => movie ID, rating
-    val ratingsFormatted = ratingsFiltered.map(l => (l._1, (l._2, l._3)))
+val ratings = data.map(l => l.split("\t")).map(l => (l(0).toInt, (l(1).toInt, l(2).toDouble)))   
+      
+// filter the RDD to only include movies rated above a specified threshold (first argument of the command line)
+    val ratingsFiltered = ratings.filter(l => l._2._1 > args(1).toInt)
     
 //SA EDIT #1 END*************************************************************************************** 
     
     // Emit every movie rated together by the same user.
     // Self-join to find every combination.
-    val joinedRatings = ratingsFormatted.join(ratingsFormatted)   
+    val joinedRatings = ratingsFiltered.join(ratingsFiltered)   
     
     // At this point our RDD consists of userID => ((movieID, rating), (movieID, rating))
 
@@ -215,18 +269,26 @@ object MovieSimilarities_SA {
 
     // We now have (movie1, movie2) = > (rating1, rating2), (rating1, rating2) ...
     // Can now compute similarities.
-    val moviePairSimilarities = moviePairRatings.mapValues(computeCosineSimilarity).cache()
+    val moviePairSimilarities = moviePairRatings.mapValues(computePearsonCoef)
+ 
+     // Bring in the genres as Array[Int]s
+    val moviePairsGenres = moviePairSimilarities.map(x => (x._1, x._2, (nameDict(x._1._1)._2, nameDict(x._1._2)._2)))
+    
+    // Calculate the number of shared genres and weight the score accordingly
+    val moviePairWeightedSimilarities = moviePairsGenres.map(weightByGenre).cache()
     
     //Save the results if desired
     //val sorted = moviePairSimilarities.sortByKey()
     //sorted.saveAsTextFile("movie-sims")
+    
+    
 
 //SA EDIT #4 START *********** use co-occurence to weight the score ***********************************
     
     // We now have (movie1, movie2) => (score, coOccurence volume)
     // Now get the sum of coOccurence  
 
-    val total_0 = moviePairSimilarities.map(x => (x._2._2))    
+    val total_0 = moviePairWeightedSimilarities.map(x => (x._2._2))    
     val total_1 = total_0.map(x => (x, 1))
     val total_2 = total_1.map(x => (x._2, x._1)).reduceByKey( (x,y) => x + y )
     val total_3 = total_2.map(x => (x._2))
@@ -234,7 +296,8 @@ object MovieSimilarities_SA {
     var totalcoOccurences:Double =  total_3.max()
     
     // Now we multiply the score by the number of occurences as a fraction of the total number of occurences
-    val weightedscores = moviePairSimilarities.map( x => ((x._1._1,x._1._2),(x._2._1*(x._2._2/totalcoOccurences), x._2._2)))
+    // NOTE: we multiply the score by 10000 to scale it to something reasonable
+    val weightedscores = moviePairSimilarities.map( x => ((x._1._1,x._1._2),(x._2._1*((x._2._2/totalcoOccurences)*10000), x._2._2))).cache()
 
 //SA EDIT #4 END***************************************************************************************     
 
@@ -244,9 +307,9 @@ object MovieSimilarities_SA {
     if (args.length > 0) {
       val movieID:Int = args(0).toInt
   // changed scoreThreshold from 0.97 to the second argument on the command line 
-      val scoreThreshold = args(1).toDouble
+      val scoreThreshold = args(2).toDouble
   // changed coOccurenceThreshold from 50.0 the third argument on the command line 
-      val coOccurenceThreshold = args(2).toInt
+      val coOccurenceThreshold = args(3).toInt
       
 //SA EDIT #3 END*************************************************************************************** 
          
@@ -273,7 +336,7 @@ object MovieSimilarities_SA {
         if (similarMovieID == movieID) {
           similarMovieID = pair._2
         }
-        println(nameDict(similarMovieID) + "\tscore: " + sim._1 + "\tCo-occurence: " + sim._2)
+        println(nameDict(similarMovieID) + "\tmatch score: " + sim._1 + "\tCo-occurence: " + sim._2)
       }
     }
   }
